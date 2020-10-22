@@ -1,0 +1,407 @@
+---
+title: "Artificial Neural Network Application for Reservoir Characterization"
+author: '[Chukwuemeka Okoli](https://www.linkedin.com/in/chukwuemeka-okoli-38686923/)'
+date: "April, 09, 2019"
+output:
+  html_document:
+    highlight: textmate
+    theme: spacelab  
+  pdf_document: 
+    toc: yes
+    highlight: zenburn
+  html_notebook:
+    toc: yes
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/', echo = TRUE)
+```
+
+## Introduction
+As a Data Scientist in the Oil and Gas Industry, we are often faced with numerous 
+challenges. For instance, with available Gas production data for an unconventional 
+reservoir, can we establish a relationship between several independent variable 
+in the production process and the dependent variable “Gas production per months” 
+using Artificial Neural Network. In this [R Markdown](https://rmarkdown.rstudio.com) 
+project, an illustration of how we can apply Artificial Neural Network to Gas 
+production is discussed. The dataset for this project is the “Q4_data.csv” file.
+
+## The Goal
+Find a relationship between the dependent variable “Gas production per months” 
+and several independent variables. Essentially, we want to determine the Gas 
+Production per month for the given well data based on different factors.
+
+## Preliminaries
+First, the required packages are installed using the `install.packages()` function. 
+
+```{r package_install, eval = FALSE}
+# install knitr
+install.packages("knitr")
+
+# install the rmarkdown package
+install.packages("rmarkdown")
+
+# install ggplot for plotting
+install.packages("ggplot2")
+
+# install dplyr for data manipulation
+install.packages("dplyr")
+
+# install neuralnet for artificial neural network
+install.packages("neuralnet")
+install.packages("NeuralNetTools")
+```
+
+The installed package is then loaded using the `library()` function. 
+
+```{r load_packages, results = "hide", message = FALSE, warning = FALSE}
+# load libraries
+library(knitr)
+library(rmarkdown)
+library(ggplot2)
+library(dplyr)
+library(neuralnet)
+library(NeuralNetTools)
+library(xfun)
+```
+
+### Data Import
+We can call in the dataset into R using the code below. The data is stored in a `.csv` file.
+
+```{r raw_data}
+set.seed(440)
+data <- read.csv("Q4_data.csv", header=TRUE)
+```
+
+### Summaries
+The data object `field_data` is complex. It contains various information about
+properties of the well such as the perforation interval, fracture volume, proppant,
+casing depth, etc. Use `summary()` to get a quick summary of the data. 
+
+```{r summary}
+summary(data)
+```
+
+The `set.seed()` function is useful when running simulations to ensure all 
+results, figures, etc. are reproducible. We can then check that no data point 
+is missing. If we have a missing data point, we need to fix the dataset.
+
+```{r check_data}
+# Check that no data is missing
+apply(data,2,function(x) sum(is.na(x)))
+```
+We can see that there is no missing data. In the case where missing data exist, 
+data cleaning will have to take place. 
+
+## Data Analysis
+
+To analyze the data, we first proceed by randomly splitting the data into a *train* 
+and a *test* dataset. A linear regression model is fit to the train dataset, and tested 
+on the test dataset.
+
+```{r train_test}
+# Train-test random splitting for linear model
+index <- sample(1:nrow(data), round(0.75*nrow(data)))
+train <- data[index,]
+test <- data[-index,]
+
+# Fitting linear model to the train dataset
+lm.fit <- lm(Gas_prod~., data=train)
+summary(lm.fit)
+
+# Predicted data from linear model fit
+pr.lm <- predict(lm.fit, test)
+
+# Test MSE
+MSE.lm <- sum((pr.lm - test$Gas_prod)^2)/nrow(test)
+```
+
+Before fitting a neural network, some preparation needs to be done. Neural networks 
+are not that easy to train and tune. As a first step, we need to address data preprocessing. 
+It is good practice to normalize your data before training a neural network. 
+This step is important because, depending on your dataset, avoiding normalization 
+may lead to useless results or to a very difficult training process (most of the 
+time, the algorithm will not converge before the number of maximum iterations allowed). 
+You can choose different methods to scale the data (z-normalization, min-max scale, etc.).
+The data were scaled using the min-max method and scaled in the interval [0,1]. 
+We therefore scale and split the data before moving on.
+
+```{r nn_scale, results="hide"}
+# Neural network fitting
+
+# Scaling data for the Neural Network
+maxs <- apply(data, 2, max) 
+mins <- apply(data, 2, min)
+scaled <- as.data.frame(scale(data, center = mins, scale = maxs - mins))
+
+# Train-test split
+train_ <- scaled[index,]
+test_ <- scaled[-index,]
+```
+
+Since there is no fixed rule as to how many layers and neurons to use, we are 
+going to use two (2) hidden layers with 5 and 3 neurons. To fit the network, 
+we use the following code:
+
+```{r nn_training}
+# Training the neural network
+n <- names(train_)
+f <- as.formula(paste("Gas_prod ~", paste(n[!n %in% "Gas_prod"], collapse = " + ")))
+neural_net <- neuralnet(f, data = train_, hidden = c(5,3), linear.output = T) 
+```
+
+Note that the hidden argument accepts a vector with the number of neurons for each 
+hidden layer, while the argument linear.output is used to specify whether we want 
+to do regression **linear.output = TRUE** or **classification linear.output = FALSE**
+
+The neuralnet package provides a nice tool to plot the model. Use the following 
+code to plot the neural network in R:
+
+```{r plot_neuralnet, result = "hide", fig.width = 8, fig.height = 6}
+# Visual plot of the model
+plot(neural_net)
+```
+
+Now we can try to predict the values for the test set and calculate the mean squared 
+error (MSE). Remember that the net will output a normalized prediction, so we need 
+to scale it back in order to make a meaningful comparison (or just a simple prediction).
+The mean squared error is one metric used to measure prediction accuracy. The MSE
+is calculated as:
+
+$$MSE = \frac{1}{n} \sum_{i=1}^{n}(Y_i - \hat{Y_i}^2)$$
+
+
+```{r predict}
+# Prediction
+pr.nn <- compute(neural_net, test_[,1:14])
+
+# Results from Neural Networks are normalized (scaled)
+# Descaling for comparison
+pr.nn_ <- pr.nn$net.result*(max(data$Gas_prod)-min(data$Gas_prod))+min(data$Gas_prod)
+test.r <- (test_$Gas_prod)*(max(data$Gas_prod)-min(data$Gas_prod))+min(data$Gas_prod)
+
+# Calculating MSE
+MSE.nn <- sum((test.r - pr.nn_)^2)/nrow(test_)
+```
+
+We then compare the two mean squares error obtained from the linear regression 
+and the neural network fitting process using the code:
+
+```{r compare_meansquareserror}
+# Compare the two Mean Squared Errors (MSEs)
+print(paste(MSE.lm, MSE.nn))
+```
+
+This shows that the network is doing a better job at predicting Gas_prod than the 
+linear model. The prediction from the neural network is **129413554.366771** which is 
+better than the **229551018.949411** obtained from the linear model. We can perform 
+a fast cross visualization in order to be more confident of the result. A visual 
+approach to the performance of the network and the linear model is plotted below.
+
+```{r plot_prediction}
+# Plot predictions
+par(mfrow=c(1,2))
+
+plot(test$Gas_prod, pr.nn_, col='red', main='Real vs predicted NN', pch=18, cex=0.7)
+abline(0,1,lwd=2)
+legend('bottomright', legend='NN', pch=18, col='red', bty='n')
+
+plot(test$Gas_prod, pr.lm, col='blue', main='Real vs predicted lm', pch=18, cex=0.7)
+abline(0,1,lwd=2)
+legend('bottomright', legend='LM', pch=18, col='blue', bty='n', cex=.95)
+```
+
+By visually inspecting the plot, we can see that the predictions made by the neural 
+network are more concentrated around the line than those made by the linear model. 
+We can obtain a more useful visual comparison using the code below
+
+```{r plot_compare, fig.width=4, fig.height=5}
+# Compare predictions on the same plot
+plot(test$Gas_prod, pr.nn_, col='red', main='Real vs predicted NN', pch=18, cex=0.7)
+points(test$Gas_prod, pr.lm, col='blue', pch=18, cex=0.7)
+abline(0,1,lwd=2)
+legend('bottomright', legend=c('NN','LM'), pch=18, col=c('red','blue'))
+```
+
+The comparison of prediction on the same plot is shown above.In analyzing the 
+model above, we allowed the network select the training, validation and testing 
+dataset itself by randomly splitting the data into a train and a test 
+set, then a linear regression model is fit and then tested on the test set. 
+
+If we choose to select the training, validation and testing datasets ourselves, 
+we normalize our data and split into training and test data as before.
+
+
+```{r nn_fitting}
+# Neural net fitting
+set.seed(440)
+mydata <- read.csv("Q4_data.csv", header=TRUE)
+
+#Normalizing the dataset
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+maxmindf <- as.data.frame(lapply(mydata, normalize))
+```
+
+```{r lookup_head}
+# Display head of data
+head(mydata)
+```
+
+```{r lookup_tail}
+# Display tail of data
+tail(mydata)
+```
+
+Since we know the size of the data, we then proceed to test and train the network. 
+We have chosen to split the training and testing dataset into a 70/30 ratio 
+.i.e. 70% (for training) and 30% (for testing) instead of allowing the network 
+do the splitting for us.
+
+```{r train_test2}
+# Training and Test Data
+trainset <- maxmindf[1:312, ]
+testset <- maxmindf[313:446, ]
+```
+
+We fit the network and arbitrarily decide on the number of hidden neurons. 
+Deciding on the number of hidden layers in a neural network is not an exact 
+science. In fact, there are instances where accuracy will likely be higher 
+without any hidden layers. Therefore, trial and error plays a significant role 
+in this process. One possibility is to compare how the accuracy of the 
+predictions change as we modify the number of hidden layers. If we use 3 and 2 
+hidden layers, we obtain:
+
+```{r neural_training, results = "hide", fig.width = 8, fig.height = 6}
+# Neural Network Training
+library(neuralnet)
+nn <- neuralnet(Gas_prod ~ Perf_Int + Frac_vol + Proppant + N.frac + 
+                Tubing.depth + Casing.depth + FTP + Choke.Size + SITHP + 
+                SG_gas + Well_Type + Latitude + Long. + Acid, data=trainset,
+                hidden=c(3,2), linear.output=TRUE, threshold=0.01)
+nn$result.matrix
+
+# Visual plot of the model
+plot(nn)
+```
+
+The output from the neural network training is shown above. Our neural network has 
+been created using the training data. We then compare this to the test data to 
+gauge the accuracy of the neural network forecast.
+
+```{r testing_output}
+#Test the resulting output
+temp_test <- subset(testset, select = c("Gas_prod", "Perf_Int", "Frac_vol", 
+                                        "Proppant", "N.frac", "Tubing.depth", 
+                                        "Casing.depth",  "FTP", "Choke.Size", 
+                                        "SITHP", "SG_gas", "Well_Type", "Latitude", 
+                                        "Long.", "Acid"))
+head(temp_test)
+nn.results <- compute(nn, temp_test)
+```
+
+The predicted results are compared to the actual results. The code to do this and 
+a snippet of the result is shown below:
+```{r compare_actual-prediction}
+#Comparison of Predicted to Actual
+results <- data.frame(actual = testset$Gas_prod, prediction = nn.results$net.result)
+results
+```
+We then test the accuracy of the model 
+
+```{r accuracy_test}
+#Testing The Accuracy Of The Model
+Gas_prod <- trainset$Gas_prod
+predicted = results$prediction * abs(diff(range(Gas_prod))) + min(Gas_prod)
+actual = results$actual * abs(diff(range(Gas_prod))) + min(Gas_prod)
+comparison = data.frame(predicted, actual)
+
+deviation = ((actual-predicted)/actual)
+comparison = data.frame(predicted, actual, deviation)
+```
+
+In the above code, we are converting the data back to its original format. Note 
+that we are also converting our data back into standard values given that they 
+were previously scaled using the max-min normalization technique.
+
+We compute the accuracy of network with (3,2) hidden layer. An accuracy of 61.8% 
+on a mean absolute deviation basis (i.e. the average deviation between estimated 
+and actual Gas production per month) was obtained. 
+```{r accuracy}
+accuracy = 1-abs(mean(deviation))
+accuracy
+```
+You can see that we obtain a high accuracy of 61.8 % accuracy using a (3,2) hidden 
+configuration. This is quite good, especially considering that our dependent 
+variable is in the interval format. However, let’s see if we can get it higher!
+
+**What happens if we now use a (5,2) hidden configuration in our neural network?** 
+Here is the generated output:
+```{r plot_nn, fig.width=8, fig.height=6}
+nn <- neuralnet(Gas_prod ~ Perf_Int + Frac_vol + Proppant + N.frac + Tubing.depth 
+                + Casing.depth + FTP + Choke.Size + SITHP + SG_gas + Well_Type 
+                + Latitude + Long. + Acid,data=trainset, hidden=c(5,2), 
+                linear.output=TRUE, threshold=0.01)
+nn$result.matrix
+
+plot(nn)
+```
+```{r}
+#Test the resulting output
+temp_test <- subset(testset, select = c("Gas_prod", "Perf_Int", "Frac_vol", 
+                                        "Proppant", "N.frac", "Tubing.depth", 
+                                        "Casing.depth",  "FTP", "Choke.Size", 
+                                        "SITHP", "SG_gas", "Well_Type", "Latitude", 
+                                        "Long.", "Acid"))
+head(temp_test)
+nn.results <- compute(nn, temp_test)
+
+results <- data.frame(actual = testset$Gas_prod, prediction = nn.results$net.result)
+results
+```
+
+The predicted results are compared to the actual results. We then test the accuracy of the model
+```{r new_accuracy-test}
+#Testing The Accuracy Of The Model
+predicted = results$prediction * abs(diff(range(Gas_prod))) + min(Gas_prod)
+actual = results$actual * abs(diff(range(Gas_prod))) + min(Gas_prod)
+comparison = data.frame(predicted,actual)
+deviation = ((actual-predicted)/actual)
+comparison = data.frame(predicted,actual,deviation)
+```
+And compute the accuracy of network with (5,2) hidden layer.
+```{r}
+accuracy = 1-abs(mean(deviation))
+accuracy
+```
+You can see that we obtain 77.84 % network accuracy using a (5,2) hidden configuration. 
+We see that our accuracy rate has now increased to nearly 78 %, indicating that 
+modifying the number of hidden nodes has enhanced our model! This shows that we 
+can increase the accuracy of the network to predict to a higher value by 
+increasing the number of hidden layers. 
+
+## Model Interpretability
+From the solution above, we can observe that neural networks resemble black boxes 
+a lot: explaining their outcome is much more difficult than explaining the outcome 
+of simpler model such as a linear model. Therefore, depending on the kind of 
+application you need, you might want to take into account this factor too. 
+Furthermore, as you have seen above, extra care will be needed to fit a neural 
+network and small changes can lead to different results.
+
+In addition, we showed that neural network is better at predicting "Gas_prod" than 
+the linear regression model. A better mean squared error (MSE) value was obtained 
+using neural network than linear model. Finally, it is possible for neural networks 
+to be more accurate at prediction than regression; however, it will take trial and 
+error of many different hidden layer configurations to get this better prediction.
+
+## Conclusion
+This project was developed to illustrate the relationship between a dependent variable 
+and several independent variables using **Artificial Neural Network**. We have 
+been able to develop a way such that we were able to select the training, 
+validation and testing datasets. We also investigated how varying number of 
+hidden layers and neurons affect the artificial neural network results. 
+The result using Artificial Neural Network was compared to result from using 
+linear regression. We can conclude that the Artificial Neural Network is better 
+at prediction than the linear regression.
